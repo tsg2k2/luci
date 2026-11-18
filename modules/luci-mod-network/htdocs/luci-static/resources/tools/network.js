@@ -444,8 +444,9 @@ return baseclass.extend({
  * @param {any} rtTables
  * @param {boolean} hasPSE
  * @param {{speed: number, duplex: "full"|"half", base: string}[]} phyLinkSpeeds
+ * @param {?{eee: ?{enabled: boolean, tx_lpi: boolean, active: boolean}, green: ?boolean, downshift: ?boolean}} phyFeatures
  */
-	addDeviceOptions(s, dev, isNew, rtTables, hasPSE, phyLinkSpeeds) {
+	addDeviceOptions(s, dev, isNew, rtTables, hasPSE, phyLinkSpeeds, phyFeatures) {
 		const parent_dev = dev ? dev.getParent() : null;
 		const devname = dev ? dev.getName() : null;
 		let o, ss;
@@ -1182,6 +1183,44 @@ return baseclass.extend({
 		o.value('', _('Default'));
 		o.value('1', _('Enable'));
 		o.value('0', _('Disable'));
+
+		/* PHY power and link options, offered only where the port supports them */
+		const onOff = (v) => v ? _('on') : _('off');
+
+		if (phyFeatures?.eee) {
+			const eee = phyFeatures.eee;
+			o = this.replaceOption(s, 'devgeneral', form.ListValue, 'eee', _('Energy Efficient Ethernet'),
+				_('IEEE 802.3az: the link sleeps between packets when both ends support it. Turn it off for a link partner that drops or stalls with it.') + ' ' +
+				_('Now: %s, %s.').format(eee.enabled && eee.tx_lpi ? _('enabled') : _('disabled'),
+					eee.active ? _('in use on this link') : _('not in use on this link')));
+			o.rmempty = true;
+			o.default = '';
+			o.value('', _('Default'));
+			o.value('1', _('Enable'));
+			o.value('0', _('Disable'));
+		}
+
+		if (phyFeatures?.green != null) {
+			o = this.replaceOption(s, 'devgeneral', form.ListValue, 'green', _('Green Ethernet'),
+				_('Powers the PHY down while no cable is connected and trims transmit power to the cable length. Some link partners link up slowly with it.') + ' ' +
+				_('Now: %s.').format(onOff(phyFeatures.green)));
+			o.rmempty = true;
+			o.default = '';
+			o.value('', _('Default'));
+			o.value('1', _('Enable'));
+			o.value('0', _('Disable'));
+		}
+
+		if (phyFeatures?.downshift != null) {
+			o = this.replaceOption(s, 'devgeneral', form.ListValue, 'downshift', _('Speed downshift'),
+				_('After repeated failed attempts at the top speed, link at the next lower speed. Turn it off to keep a marginal cable from linking slower without notice.') + ' ' +
+				_('Now: %s.').format(onOff(phyFeatures.downshift)));
+			o.rmempty = true;
+			o.default = '';
+			o.value('', _('Default'));
+			o.value('1', _('Enable'));
+			o.value('0', _('Disable'));
+		}
 
 		o = this.replaceOption(s, 'devgeneral', form.Value, 'txqueuelen', _('TX queue length'));
 		o.placeholder = dev ? dev._devstate('qlen') : '';

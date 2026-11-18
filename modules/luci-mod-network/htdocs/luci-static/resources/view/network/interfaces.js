@@ -1659,6 +1659,7 @@ return view.extend({
 			if (devName) {
 				return L.resolveDefault(callNetworkDeviceStatus(devName), {}).then(({
 					pse,
+					"phy-features": phyFeatures,
 					"link-advertising": linkAdvertising,
 					"link-partner-advertising": linkPartnerAdvertising,
 					"link-supported": linkSupported
@@ -1671,7 +1672,7 @@ return view.extend({
 					]);
 					if (!phy_links || phy_links.length === 0)
 						phy_links = phyLinkSpeeds;
-					nettools.addDeviceOptions(s, dev, isNew, rtTables, hasPSE, parseLinks(phy_links));
+					nettools.addDeviceOptions(s, dev, isNew, rtTables, hasPSE, parseLinks(phy_links), phyFeatures);
 				});
 			} else {
 				nettools.addDeviceOptions(s, dev, isNew, rtTables, false, parseLinks(phyLinkSpeeds));
