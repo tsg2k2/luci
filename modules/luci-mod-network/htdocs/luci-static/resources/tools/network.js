@@ -1,5 +1,6 @@
 'use strict';
 'require fs';
+'require rpc';
 'require ui';
 'require dom';
 'require uci';
@@ -8,6 +9,136 @@
 'require baseclass';
 'require validation';
 'require tools.widgets as widgets';
+
+const callPhyStats = rpc.declare({
+	object: 'luci.phydiag',
+	method: 'stats',
+	params: [ 'device' ],
+	expect: { stats: {} }
+});
+
+const callPhyTemperature = rpc.declare({
+	object: 'luci.phydiag',
+	method: 'temperature',
+	params: [ 'device' ],
+	expect: { temperature: {} }
+});
+
+const callPhyCableTest = rpc.declare({
+	object: 'luci.phydiag',
+	method: 'cable_test',
+	params: [ 'device' ]
+});
+
+const phyStatLabels = {
+	line_crc8_errors: _('Line CRC errors'),
+	line_rs_corrected: _('Frames repaired by RS'),
+	line_ldpc_uncorrected: _('Frames lost (LDPC uncorrected)'),
+	line_ldpc_corrected_1iter: _('Frames repaired by LDPC'),
+	fast_retrain_local: _('Fast retrains by this end'),
+	fast_retrain_partner: _('Fast retrains by the partner')
+};
+
+/* SNR margin registers are offset binary in 0.1 dB, 0x8000 = 0 dB */
+function formatSnrMargin(raw) {
+	return '%+.1f dB'.format((raw - 0x8000) / 10);
+}
+
+function renderPhyDiagnostics(devname) {
+	const tempNode = E('div', {}, E('em', {}, _('Loading…')));
+	const statsNode = E('div');
+	const cableNode = E('div');
+
+	const runCableTest = function(ev) {
+		ev.target.disabled = true;
+		dom.content(cableNode, E('em', { 'class': 'spinning' }, _('Testing the cable, the link drops meanwhile…')));
+
+		return callPhyCableTest(devname).then(function(res) {
+			if (res?.error || !Array.isArray(res?.result)) {
+				dom.content(cableNode, E('p', { 'class': 'alert-message warning' }, res?.error ?? _('The cable test failed')));
+				return;
+			}
+
+			/* ethtool lists {pair, code} per pair, then {pair, length} per fault */
+			const pairs = {};
+			const collect = function(list) {
+				for (let r of list) {
+					if (Array.isArray(r))
+						collect(r);
+					else if (r?.pair)
+						Object.assign(pairs[r.pair] ??= { pair: r.pair }, r);
+				}
+			};
+			collect(res.result);
+
+			const rows = Object.values(pairs).map(p => [
+				p.pair, p.code ?? '-', p.length != null ? '%.1f m'.format(p.length) : ''
+			]);
+
+			dom.content(cableNode, rows.length
+				? E('table', { 'class': 'table' }, [
+					E('tr', { 'class': 'tr table-titles' }, [
+						E('th', { 'class': 'th' }, _('Pair')),
+						E('th', { 'class': 'th' }, _('Result')),
+						E('th', { 'class': 'th' }, _('Fault distance'))
+					]),
+					...rows.map(r => E('tr', { 'class': 'tr' }, r.map(c => E('td', { 'class': 'td' }, c))))
+				])
+				: E('pre', {}, JSON.stringify(res.result, null, 2)));
+		}).finally(function() {
+			ev.target.disabled = false;
+		});
+	};
+
+	Promise.all([
+		L.resolveDefault(callPhyTemperature(devname), {}),
+		L.resolveDefault(callPhyStats(devname), {})
+	]).then(function([ temp, stats ]) {
+		if (temp?.input != null) {
+			const alarm = temp.crit_alarm ? _('critical') : temp.max_alarm ? _('warm') : null;
+			dom.content(tempNode, [
+				'%.1f °C'.format(temp.input / 1000),
+				temp.max != null ? ' · ' + _('warning at %.0f °C').format(temp.max / 1000) : '',
+				temp.crit != null ? ' · ' + _('critical at %.0f °C').format(temp.crit / 1000) : '',
+				alarm ? E('strong', {}, ' · ' + alarm) : ''
+			]);
+		}
+		else {
+			dom.content(tempNode, E('em', {}, _('No sensor')));
+		}
+
+		const rows = [];
+		for (let k in stats) {
+			let label = phyStatLabels[k], value = stats[k];
+			let m = k.match(/^snr_(min_)?margin_([a-d])_raw$/);
+
+			if (m) {
+				label = m[1] ? _('Lowest SNR margin, pair %s').format(m[2].toUpperCase())
+				             : _('SNR margin, pair %s').format(m[2].toUpperCase());
+				value = formatSnrMargin(value);
+			}
+			else if (!label) {
+				continue;
+			}
+
+			rows.push(E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td left' }, label),
+				E('td', { 'class': 'td left' }, String(value))
+			]));
+		}
+
+		dom.content(statsNode, rows.length ? E('table', { 'class': 'table' }, rows) : '');
+	});
+
+	return E('div', {}, [
+		E('h5', {}, _('PHY temperature')), tempNode,
+		statsNode,
+		E('h5', {}, _('Cable test')),
+		E('p', {}, _('Measures each pair for opens, shorts and impedance faults, and how far away they are. The link goes down for a few seconds while it runs.')),
+		E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(null, runCableTest) }, _('Run cable test')),
+		cableNode
+	]);
+}
 
 function validateQoSMap(section_id, value) {
 	if (value == '')
@@ -457,6 +588,10 @@ return baseclass.extend({
 		s.tab('bridgevlan', _('Bridge VLAN filtering'));
 		if (hasPSE)
 			s.tab('devpse', _('PoE / PSE options'));
+
+		const hasPhyDiag = !!(devname && phyFeatures && Object.keys(phyFeatures).length);
+		if (hasPhyDiag)
+			s.tab('devdiag', _('PHY diagnostics'));
 
 		o = this.replaceOption(s, 'devgeneral', form.ListValue, 'type', _('Device type'),
 			(!L.hasSystemFeature('bonding') && isNew ? '<a href="' + L.url("admin", "system", "package-manager", "?query=kmod-bonding") + '">'+
@@ -1220,6 +1355,39 @@ return baseclass.extend({
 			o.value('', _('Default'));
 			o.value('1', _('Enable'));
 			o.value('0', _('Disable'));
+		}
+
+		if (phyFeatures?.mdix) {
+			o = this.replaceOption(s, 'devgeneral', form.ListValue, 'mdix', _('MDI/MDI-X'),
+				_('Which pairs this end transmits on. Automatic works with any cable; force it only for a partner that cannot detect the crossover.') + ' ' +
+				_('Now: %s.').format(phyFeatures.mdix.state == 'mdix' ? 'MDI-X' : phyFeatures.mdix.state == 'mdi' ? 'MDI' : _('no link')));
+			o.rmempty = true;
+			o.default = '';
+			o.value('', _('Default'));
+			o.value('auto', _('Automatic'));
+			o.value('mdi', 'MDI');
+			o.value('mdix', 'MDI-X');
+		}
+
+		if (phyFeatures?.master_slave) {
+			const ms = phyFeatures.master_slave;
+			o = this.replaceOption(s, 'devgeneral', form.ListValue, 'master_slave', _('Clock master/slave'),
+				_('Which end of a 1G or faster copper link provides the clock. Change it only for a partner that needs a fixed role.') + ' ' +
+				_('Now: %s.').format(ms.state == 'master' ? _('master') : ms.state == 'slave' ? _('slave') : _('not resolved')));
+			o.rmempty = true;
+			o.default = '';
+			o.value('', _('Default'));
+			o.value('preferred-master', _('Preferred master'));
+			o.value('preferred-slave', _('Preferred slave'));
+			o.value('forced-master', _('Forced master'));
+			o.value('forced-slave', _('Forced slave'));
+		}
+
+		if (hasPhyDiag) {
+			o = this.replaceOption(s, 'devdiag', form.DummyValue, '_phydiag');
+			o.renderWidget = function(section_id) {
+				return renderPhyDiagnostics(devname);
+			};
 		}
 
 		o = this.replaceOption(s, 'devgeneral', form.Value, 'txqueuelen', _('TX queue length'));

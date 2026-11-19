@@ -1,0 +1,114 @@
+// Licensed to the public under the Apache License 2.0.
+// PHY diagnostics for the device dialog: ethtool PHY statistics, the PHY's
+// temperature sensor and the cable test.
+
+'use strict';
+
+import { popen, glob, readfile } from 'fs';
+
+function valid_dev(dev) {
+	return type(dev) == 'string' && match(dev, /^[A-Za-z0-9_.@-]{1,15}$/) &&
+		readfile(`/sys/class/net/${dev}/ifindex`) != null;
+}
+
+function run(cmd) {
+	const fd = popen(cmd, 'r');
+
+	if (!fd)
+		return null;
+
+	const out = fd.read('all');
+	fd.close();
+
+	return out;
+}
+
+/* the hwmon device of the PHY behind a port: match the port's phy-handle
+ * with the hwmon device's phandle; DSA ports carry no "phydev" link */
+function phy_hwmon(dev) {
+	const handle = readfile(`/sys/class/net/${dev}/of_node/phy-handle`);
+
+	if (!handle)
+		return null;
+
+	for (let h in glob('/sys/class/hwmon/hwmon*'))
+		if (readfile(`${h}/device/of_node/phandle`) == handle)
+			return h;
+
+	return null;
+}
+
+function hwmon_val(h, name) {
+	const v = readfile(`${h}/${name}`);
+
+	return v != null ? +trim(v) : null;
+}
+
+const methods = {
+	stats: {
+		args: { device: 'device' },
+		call: function(req) {
+			const dev = req.args?.device;
+
+			if (!valid_dev(dev))
+				return { error: 'invalid device' };
+
+			const out = run(`ethtool --phy-statistics ${dev} 2>/dev/null`);
+			const stats = {};
+
+			for (let line in split(out ?? '', '\n')) {
+				const m = match(line, /^\s+([A-Za-z0-9_]+): (\d+)$/);
+
+				if (m)
+					stats[m[1]] = +m[2];
+			}
+
+			return { stats };
+		}
+	},
+
+	temperature: {
+		args: { device: 'device' },
+		call: function(req) {
+			const dev = req.args?.device;
+
+			if (!valid_dev(dev))
+				return { error: 'invalid device' };
+
+			const h = phy_hwmon(dev);
+
+			if (!h)
+				return {};
+
+			const t = {};
+
+			for (let k in [ 'input', 'max', 'crit', 'max_alarm', 'crit_alarm' ]) {
+				const v = hwmon_val(h, `temp1_${k}`);
+
+				if (v != null)
+					t[k] = v;
+			}
+
+			return { temperature: t };
+		}
+	},
+
+	cable_test: {
+		args: { device: 'device' },
+		call: function(req) {
+			const dev = req.args?.device;
+
+			if (!valid_dev(dev))
+				return { error: 'invalid device' };
+
+			const out = run(`ethtool --json --cable-test ${dev} 2>&1`);
+			let res = null;
+
+			try { res = json(out); } catch (e) { }
+
+			return res ? { result: res } : { error: trim(out ?? 'ethtool failed') };
+		}
+	}
+};
+
+return { 'luci.phydiag': methods };
