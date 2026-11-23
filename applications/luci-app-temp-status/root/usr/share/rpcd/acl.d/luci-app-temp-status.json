@@ -4,7 +4,11 @@
 		"read": {
 			"ubus": {
 				"luci.temp-status": [ "getSensors", "getTempData", "getTempStatus" ]
-			}
+			},
+			"uci": [ "phy_thermal" ]
+		},
+		"write": {
+			"uci": [ "phy_thermal" ]
 		}
 	}
 }

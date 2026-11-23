@@ -9,5 +9,18 @@
 		"depends": {
 			"acl": [ "luci-app-temp-status" ]
 		}
+	},
+
+	"admin/system/phy-thermal": {
+		"title": "Port cooling",
+		"order": 75,
+		"action": {
+			"type": "view",
+			"path": "system/phy-thermal"
+		},
+		"depends": {
+			"acl": [ "luci-app-temp-status" ],
+			"uci": { "phy_thermal": true }
+		}
 	}
 }
